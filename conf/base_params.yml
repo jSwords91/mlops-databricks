@@ -1,0 +1,9 @@
+input_data_file_path: "dbfs:/FileStore/shared_uploads/jswords@aiimi.com/daily_minimum_temperatures_in_me.csv"
+
+input_file_type: "csv"
+
+value_column: "Daily minimum temperatures"
+value_column_renamed: "measurement"
+
+date_column: "Date"
+date_column_renamed: "date"

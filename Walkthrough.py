@@ -34,6 +34,8 @@ from src.featurizer import *
 from src.visualiser import *
 from src.auto_ml import *
 
+from utils.notebook_utils import *
+
 from utils.logging import *
 _logger = get_logger()
 
@@ -41,7 +43,11 @@ _logger = get_logger()
 # COMMAND ----------
 
 # DBTITLE 1,Data Loader
-display(DataLoader(DataLoaderConfig).load_and_clean_pyspark())
+config = create_data_loader_config("base_params")
+
+df = DataLoader(config).run()
+
+display(df)
 
 # COMMAND ----------
 
@@ -51,36 +57,11 @@ DataVisualiser(df).plot()
 # COMMAND ----------
 
 # DBTITLE 1,Feature Engineering
-df = Featurizer(FeaturizerConfig).run(
-    DataLoader(DataLoaderConfig).load_and_clean_pyspark()
-)
+df = Featurizer(FeaturizerConfig).run(df)
 
 # COMMAND ----------
 
 display(df)
-
-# COMMAND ----------
-
-@dataclass
-class MLflowTrackingConfig:
-    """
-    Configuration data class used to unpack MLflow parameters during a model training run.
-    Attributes:
-        run_name (str)
-            Name of MLflow run
-        experiment_id (int)
-            ID of the MLflow experiment to be activated. If an experiment with this ID does not exist, raise an exception.
-        experiment_path (str)
-            Case sensitive name of the experiment to be activated. If an experiment with this name does not exist,
-            a new experiment wth this name is created.
-        model_name (str)
-            Name of the registered model under which to create a new model version. If a registered model with the given
-            name does not exist, it will be created automatically.
-    """
-    run_name: str
-    experiment_id: int = None
-    experiment_path: str = None
-    model_name: str = None
 
 # COMMAND ----------
 

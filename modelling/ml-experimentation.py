@@ -6,12 +6,12 @@
 # MAGIC This will not be an exhaustive attempt at modelling, but will show how you can use Hyper Opt in an attempt to beat the AutoML baseline.
 # MAGIC
 # MAGIC
-# MAGIC **AutoML Baseline: 2.58~**
+# MAGIC **AutoML RMSE Baseline: 2.58~**
 
 # COMMAND ----------
 
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import *
@@ -42,16 +42,18 @@ from math import sqrt
 from datetime import date
 
 from utils.logging import *
+from utils.notebook_utils import * 
 _logger = get_logger()
 
 # COMMAND ----------
 
-def make_train_test(df: pd.DataFrame, forecast_horizon: int) -> Union[pd.DataFrame, pd.DataFrame]: 
+def make_train_test(
+    df: pd.DataFrame, forecast_horizon: int
+) -> Union[pd.DataFrame, pd.DataFrame]:
     is_history = [True] * (len(df) - forecast_horizon) + [False] * forecast_horizon
     train = df.iloc[is_history]
     test = df.iloc[~np.array(is_history)]
     return train, test
-
 
 # COMMAND ----------
 
@@ -59,9 +61,11 @@ FORECAST_HORIZON = 30
 
 # COMMAND ----------
 
+config = create_data_loader_config("base_params")
+
 df = (
     Featurizer(FeaturizerConfig)
-    .run(DataLoader(DataLoaderConfig).load_and_clean_pyspark())
+    .run(DataLoader(config).run())
     .toPandas()
 )
 
@@ -125,7 +129,7 @@ search_space = {
 # Set parallelism (should be order of magnitude smaller than max_evals)
 spark_trials = SparkTrials(parallelism=3)
 
-with mlflow.start_run(run_name="Hyperopt"):
+with mlflow.start_run(run_name="Hyperopt") as mlflow_run:
     argmin = fmin(
         fn=objective,
         space=search_space,
@@ -133,6 +137,10 @@ with mlflow.start_run(run_name="Hyperopt"):
         max_evals=20,
         trials=spark_trials,
     )
+
+# COMMAND ----------
+
+mlflow.end_run()
 
 # COMMAND ----------
 
@@ -151,22 +159,37 @@ print(best_params)
 
 # COMMAND ----------
 
-model = Prophet(**best_params)
 
-# fit the best model to historical data
-model.fit(train.rename(columns={"date": "ds", "measurement": "y"}))
+with mlflow.start_run():
+    model = Prophet(**best_params).fit(train.rename(columns={"date": "ds", "measurement": "y"}))
 
-future_pd = make_future_df(model, FORECAST_HORIZON, "d")
+    future_pd = make_future_df(model, FORECAST_HORIZON, "d")
+    forecast_pd = model.predict(future_pd)
 
-forecast_pd = model.predict(future_pd)
-
-# score on actual v pred on test set
-score = evaluate(
+    score = evaluate(
     test["measurement"].values,
     forecast_pd.iloc[-FORECAST_HORIZON:, :]["yhat"].values,
-)
+    )
 
-print(score)
+    mlflow.prophet.log_model(model, artifact_path="prophet-tuned-model")
+    mlflow.log_params(best_params)
+    model_uri = mlflow.get_artifact_uri("prophet-tuned-model")
+    print(f"Model artifact logged to: {model_uri}")
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC ## Use new model to predict
+
+# COMMAND ----------
+
+loaded_model = mlflow.prophet.load_model(model_uri)
+
+forecast = loaded_model.predict(loaded_model.make_future_dataframe(60))
+
+print(f"forecast:\n${forecast.head(30)}")
 
 # COMMAND ----------
 
