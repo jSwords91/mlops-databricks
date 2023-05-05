@@ -3,10 +3,24 @@
 # MAGIC
 # MAGIC # MLOps End-to-End
 # MAGIC
-# MAGIC This notebook will soon be split in to numerous .py files. However whilst I am writing the code I will keep it in a single notebook.
+# MAGIC This notebook dmeonstrates the process that our pipelines will follow by reading in the .py files that contain our classes. 
+# MAGIC
+# MAGIC In practice you wouldn't use a notebook (although you could).
+# MAGIC
+# MAGIC Broadly, the steps I will follow are:
+# MAGIC
+# MAGIC * Load the data 
+# MAGIC * Apply data cleaning methods
+# MAGIC * Feature Engineering
+# MAGIC * Baseline model using AutoML [This step wouldn't be included in the pipeline]
+# MAGIC   * Experiment to see if we can beat the AutoML model [This step wouldn't be included in the pipeline]
+# MAGIC * Save the best model for use in the pipeline
+# MAGIC * Apply the best model to data
+# MAGIC * Monitor model performance
 
 # COMMAND ----------
 
+# DBTITLE 1,Libraries
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from datetime import date
@@ -15,6 +29,11 @@ from pyspark.sql.functions import *
 from pyspark.sql.types import *
 import pyspark.pandas as ps
 
+from src.data_loader import *
+from src.featurizer import *
+from src.visualiser import *
+from src.auto_ml import *
+
 from utils.logging import *
 _logger = get_logger()
 
@@ -22,116 +41,16 @@ _logger = get_logger()
 # COMMAND ----------
 
 # DBTITLE 1,Data Loader
-FILEPATH = "dbfs:/FileStore/shared_uploads/jswords@aiimi.com/daily_minimum_temperatures_in_me.csv"
-
-@dataclass
-class DataLoaderConfig:
-    """
-     Attributes:
-        file_type (str): File type of data being read in
-        file_path (str): Filep path of data being read in
-    """
-    file_type: str = "csv"
-    file_path: str = FILEPATH
-    date_column: str = "date"
-    value_column: str = "Daily minimum temperatures"
-
-
-class DataLoader:
-    """
-    Class for reading in a file and cleaning the data
-    """
-
-    def __init__(self, cfg: DataLoaderConfig):
-        self.cfg = cfg
-
-    @staticmethod
-    def read_data(file_path: str, file_type: Optional[str] = "csv") -> DataFrame:
-        return (
-            spark.read.format(file_type)
-            .option("header", "true")
-            .load(file_path)
-        )
-
-    def rename_columns(self, df: DataFrame) -> DataFrame:
-        return (df
-                .withColumnRenamed(self.cfg.value_column, "measurement")
-                .withColumnRenamed(self.cfg.date_column, "date")
-                )
-
-    @staticmethod
-    def change_column_type(df: DataFrame) -> DataFrame:
-        return (df
-                .withColumn("measurement", col("measurement").cast(DoubleType()))
-                .withColumn("date", to_date(col("date"), "M/d/yyyy"))
-                )
-
-    @staticmethod
-    def set_index_and_sort(df: DataFrame) -> DataFrame:
-        return df.sort("date")
-
-    def load_and_clean_pyspark(self) -> DataFrame:
-
-        _logger.info('Reading Data & Applying Pre-Processing Steps')
-        df = self.read_data(self.cfg.file_path, self.cfg.file_type)
-        df_renamed = self.rename_columns(df)
-        df_typed = self.change_column_type(df_renamed)
-        df_cleaned = self.set_index_and_sort(df_typed)
-        return df_cleaned
-
- 
-
-# COMMAND ----------
-
 display(DataLoader(DataLoaderConfig).load_and_clean_pyspark())
 
 # COMMAND ----------
 
 # DBTITLE 1,Visualise
-
-class DataVisualiser:
-
-    def __init__(self, df: DataFrame):
-        self.df = df
-
-    def plot(self):
-        pd.options.plotting.backend = "plotly"
-        display(
-            self.df.select("date", "measurement").pandas_api().set_index(["date"]).plot()
-        )
-
-# COMMAND ----------
-
 DataVisualiser(df).plot()
 
 # COMMAND ----------
 
 # DBTITLE 1,Feature Engineering
-@dataclass
-class FeaturizerConfig:
-    date_col_name: str = "date"
-
-class Featurizer:
-
-    def __init__(self, cfg: FeaturizerConfig):
-        self.cfg = cfg
-
-    @staticmethod
-    def add_date_features(df: DataFrame, date_col_name: str):
-        return (df
-        .withColumn("day_of_year", dayofyear(date_col_name))
-        .withColumn("quarter", quarter(date_col_name))
-        .withColumn("month", month(date_col_name))
-        .withColumn("year", year(date_col_name))
-        )
-
-    def run(self, df: DataFrame):
-        _logger.info('Adding Date Features')
-        return self.add_date_features(df, self.cfg.date_col_name)
-
-
-# COMMAND ----------
-
 df = Featurizer(FeaturizerConfig).run(
     DataLoader(DataLoaderConfig).load_and_clean_pyspark()
 )
@@ -165,46 +84,10 @@ class MLflowTrackingConfig:
 
 # COMMAND ----------
 
-
-
-# COMMAND ----------
-
-import databricks.automl
-import mlflow.pyfunc
-from mlflow.tracking import MlflowClient
- 
-
-@dataclass
-class AutoMLConfig:
-    target_col: str = "measurement"
-    date_col: str = "date"
-    forecast_horizon: int = 30
-    forecast_frequency: str = "d"
-    primary_metric: str = "rmse"
-    output_database: str = "default"
-
-class RunAutoML:
-    
-    def __init__(self, cfg: AutoMLConfig):
-        self.cfg = cfg
-
-    def run(self, df: DataFrame):
-        return (
-            databricks.automl.forecast(
-            df,
-            target_col=self.cfg.target_col,
-            time_col=self.cfg.date_col,
-            horizon=self.cfg.forecast_horizon,
-            frequency=self.cfg.forecast_frequency,
-            primary_metric=self.cfg.primary_metric,
-            output_database=self.cfg.output_database)
-        )
-
-
-
-# COMMAND ----------
-
+# DBTITLE 1,AutoML: Baseline
 summary = RunAutoML(AutoMLConfig).run(df)
+
+# COMMAND ----------
 
 
 run_id = MlflowClient()
@@ -214,7 +97,13 @@ model_uri = "runs:/{run_id}/model".format(run_id=trial_id)
 pyfunc_model = mlflow.pyfunc.load_model(model_uri)
 forecasts = pyfunc_model._model_impl.python_model.predict_timeseries(include_history=True)
 
-# COMMAND ----------
-
 forecast_pd = spark.table(summary.output_table_name)
 display(forecast_pd)
+
+# COMMAND ----------
+
+display(df)
+
+# COMMAND ----------
+
+
